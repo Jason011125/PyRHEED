@@ -5,13 +5,34 @@ build/
 dist/
 PyRHEED.egg-info/
 src/.idea
-src/pyrheed/__pycache__/
 src/venv
 src/venv_64
 Dockerfile
 PyRHEED.zip
 .dockerignore
 .pypirc
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# System files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+
+# Generated data files
+*.csv
+*.log
+
+# Dependency lock files
+uv.lock
+
 # Test data (large files)
 tests/data/videos/*
 tests/data/images/*
