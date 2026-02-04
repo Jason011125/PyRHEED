@@ -1,0 +1,27 @@
+{
+  "project": {
+    "name": "PyRHEED Camera Integration",
+    "description": "Adding real-time camera support to PyRHEED"
+  },
+  "agents": {
+    "default": "pyqt6-developer",
+    "available": [
+      "pyqt6-developer",
+      "camera-integrator"
+    ]
+  },
+  "commands": {
+    "available": [
+      "camera-dev",
+      "analyze-frame"
+    ]
+  },
+  "model": "sonnet",
+  "context": {
+    "auto_read_files": [
+      "CLAUDE.md",
+      "src/pyrheed/window.py",
+      "src/pyrheed/canvas.py"
+    ]
+  }
+}
