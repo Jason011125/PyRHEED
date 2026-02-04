@@ -753,11 +753,15 @@ class VideoTestWindow(QMainWindow):
                 if frame is not None:
                     self._on_frame(frame, 0)
             else:
+                # Live source (camera) - disable seek controls
                 self._seek_slider.setEnabled(False)
                 self._prev_btn.setEnabled(False)
                 self._next_btn.setEnabled(False)
                 self._frame_spinbox.setEnabled(False)
                 self._total_label.setText("/ 0")
+
+                # Auto-start camera
+                self._source.start()
         else:
             self._status.showMessage("Failed to open source")
 
