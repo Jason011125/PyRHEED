@@ -16,16 +16,20 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFileDialog, QSlider, QStatusBar,
     QSpinBox, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
-    QListWidget, QListWidgetItem, QSplitter
+    QListWidget, QListWidgetItem, QSplitter, QGroupBox, QCheckBox
 )
-from PyQt6.QtGui import QImage, QPixmap, QColor, QPen, QBrush
-from PyQt6.QtCore import Qt, QRectF
+from PyQt6.QtGui import QImage, QPixmap, QColor, QPen, QBrush, QPainter
+from PyQt6.QtCore import Qt, QRectF, QMargins, QPointF
+from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
 
 from pyrheed.video import (
     VideoFileSource, CameraSource,
     enumerate_cameras, SourceState
 )
-from pyrheed.roi import ROI, ROIManager, ROIGraphicsItem
+from pyrheed.roi import (
+    ROI, ROIManager, ROIGraphicsItem,
+    calculate_roi_intensity, calculate_frame_intensity, IntensityTracker
+)
 
 
 class ImageCanvas(QGraphicsView):
@@ -56,6 +60,45 @@ class ImageCanvas(QGraphicsView):
         # ROI management
         self._roi_manager = ROIManager()
         self._roi_items: dict[str, ROIGraphicsItem] = {}
+
+        # Intensity tracking
+        self._intensity_tracker = IntensityTracker()
+        self._frame_intensity_tracker = IntensityTracker()  # For full-frame intensity
+        self._current_frame: np.ndarray | None = None
+
+    @property
+    def intensity_tracker(self) -> IntensityTracker:
+        return self._intensity_tracker
+
+    @property
+    def frame_intensity_tracker(self) -> IntensityTracker:
+        return self._frame_intensity_tracker
+
+    def track_frame_intensity(self, frame_index: int, intensity: float) -> None:
+        """Track full-frame intensity."""
+        self._frame_intensity_tracker.add("full_frame", frame_index, intensity)
+
+    def set_frame(self, frame: np.ndarray) -> None:
+        """Store current frame for intensity calculation."""
+        self._current_frame = frame
+
+    def calculate_intensities(self, frame_index: int) -> dict[str, float]:
+        """Calculate intensity for all ROIs.
+
+        Returns:
+            Dict mapping ROI ID to intensity value.
+        """
+        results = {}
+        if self._current_frame is None:
+            return results
+
+        for roi in self._roi_manager:
+            intensity = calculate_roi_intensity(self._current_frame, roi)
+            if intensity is not None:
+                self._intensity_tracker.add(roi.id, frame_index, intensity)
+                results[roi.id] = intensity
+
+        return results
 
     @property
     def roi_manager(self) -> ROIManager:
@@ -152,6 +195,246 @@ class ImageCanvas(QGraphicsView):
         self._roi_manager.clear()
 
 
+class IntensityChart(QWidget):
+    """Widget containing chart and frame range controls."""
+
+    # Maximum points to display for performance
+    MAX_DISPLAY_POINTS = 500
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # Frame range controls
+        range_layout = QHBoxLayout()
+        range_layout.addWidget(QLabel("Frame:"))
+
+        self._start_spin = QSpinBox()
+        self._start_spin.setMinimum(0)
+        self._start_spin.setMaximum(999999)
+        self._start_spin.setValue(0)
+        self._start_spin.valueChanged.connect(self._on_spin_changed)
+        range_layout.addWidget(self._start_spin)
+
+        range_layout.addWidget(QLabel("-"))
+
+        self._end_spin = QSpinBox()
+        self._end_spin.setMinimum(0)
+        self._end_spin.setMaximum(999999)
+        self._end_spin.setValue(100)
+        self._end_spin.valueChanged.connect(self._on_spin_changed)
+        range_layout.addWidget(self._end_spin)
+
+        self._auto_range_cb = QCheckBox("Auto")
+        self._auto_range_cb.setChecked(True)
+        self._auto_range_cb.stateChanged.connect(self._on_auto_range_changed)
+        range_layout.addWidget(self._auto_range_cb)
+
+        range_layout.addStretch()
+        layout.addLayout(range_layout)
+
+        # Error label
+        self._error_label = QLabel("")
+        self._error_label.setStyleSheet("color: red; font-size: 11px;")
+        self._error_label.setVisible(False)
+        layout.addWidget(self._error_label)
+
+        # Chart view
+        self._chart_view = QChartView()
+        self._chart = QChart()
+        self._chart.setTitle("Intensity Trend")
+        self._chart.legend().setVisible(True)
+        self._chart.setAnimationOptions(QChart.AnimationOption.NoAnimation)
+        self._chart.setMargins(QMargins(0, 0, 0, 0))
+
+        # Axes
+        self._axis_x = QValueAxis()
+        self._axis_x.setTitleText("Frame")
+        self._axis_x.setLabelFormat("%d")
+        self._chart.addAxis(self._axis_x, Qt.AlignmentFlag.AlignBottom)
+
+        self._axis_y = QValueAxis()
+        self._axis_y.setTitleText("Intensity")
+        self._axis_y.setRange(0, 1)
+        self._chart.addAxis(self._axis_y, Qt.AlignmentFlag.AlignLeft)
+
+        self._chart_view.setChart(self._chart)
+        self._chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        layout.addWidget(self._chart_view)
+
+        # Series storage
+        self._series: dict[str, QLineSeries] = {}
+
+        # Colors for series
+        self._colors = [
+            QColor("#00BFFF"),  # Full frame - cyan
+            QColor("#FF6B6B"),  # ROI 1 - red
+            QColor("#4ECDC4"),  # ROI 2 - teal
+            QColor("#FFE66D"),  # ROI 3 - yellow
+            QColor("#95E1D3"),  # ROI 4 - mint
+            QColor("#F38181"),  # ROI 5 - coral
+        ]
+
+        # Store current data for re-filtering
+        self._current_frame_tracker: IntensityTracker | None = None
+        self._current_roi_tracker: IntensityTracker | None = None
+        self._current_roi_labels: dict[str, str] = {}
+
+        # Valid data range
+        self._data_min_frame = 0
+        self._data_max_frame = 0
+
+    def _on_spin_changed(self) -> None:
+        """Handle spinbox value change - auto switch to manual mode."""
+        # Auto-switch to manual mode when user edits
+        if self._auto_range_cb.isChecked():
+            self._auto_range_cb.blockSignals(True)
+            self._auto_range_cb.setChecked(False)
+            self._auto_range_cb.blockSignals(False)
+
+        self._validate_and_apply_range()
+
+    def _on_auto_range_changed(self, state: int) -> None:
+        """Handle auto range checkbox change."""
+        auto = state == Qt.CheckState.Checked.value
+        if auto:
+            self._error_label.setVisible(False)
+            self._update_auto_range()
+
+    def _validate_and_apply_range(self) -> None:
+        """Validate input and apply range."""
+        start = self._start_spin.value()
+        end = self._end_spin.value()
+
+        # Check if values are within data range
+        has_data = self._data_max_frame > 0
+        start_valid = not has_data or (0 <= start <= self._data_max_frame)
+        end_valid = not has_data or (0 <= end <= self._data_max_frame)
+
+        # Show error if out of range
+        if has_data and (not start_valid or not end_valid):
+            self._error_label.setText(
+                f"Range out of bounds (valid: 0-{self._data_max_frame})"
+            )
+            self._error_label.setVisible(True)
+            return
+
+        # Auto-swap if start > end but both valid
+        if start > end:
+            self._start_spin.blockSignals(True)
+            self._end_spin.blockSignals(True)
+            self._start_spin.setValue(end)
+            self._end_spin.setValue(start)
+            self._start_spin.blockSignals(False)
+            self._end_spin.blockSignals(False)
+            start, end = end, start
+
+        # Clear error and apply
+        self._error_label.setVisible(False)
+        if end > start:
+            self._axis_x.setRange(start, end)
+
+    def _update_auto_range(self) -> None:
+        """Update range automatically based on data."""
+        if self._current_frame_tracker:
+            frame_history = self._current_frame_tracker.get_history("full_frame")
+            if frame_history:
+                max_frame = max(f[0] for f in frame_history)
+                min_frame = min(f[0] for f in frame_history)
+                self._data_min_frame = min_frame
+                self._data_max_frame = max_frame
+                self._axis_x.setRange(max(0, min_frame), max(10, max_frame + 1))
+                # Update spinbox values to reflect current range
+                self._start_spin.blockSignals(True)
+                self._end_spin.blockSignals(True)
+                self._start_spin.setValue(max(0, min_frame))
+                self._end_spin.setValue(max(10, max_frame + 1))
+                self._start_spin.blockSignals(False)
+                self._end_spin.blockSignals(False)
+
+    def update_data(
+        self,
+        frame_tracker: IntensityTracker,
+        roi_tracker: IntensityTracker,
+        roi_labels: dict[str, str]
+    ) -> None:
+        """Update chart with latest intensity data."""
+        # Store references for range filtering
+        self._current_frame_tracker = frame_tracker
+        self._current_roi_tracker = roi_tracker
+        self._current_roi_labels = roi_labels
+
+        # Update full-frame series
+        frame_history = frame_tracker.get_history("full_frame")
+        self._update_series("full_frame", "Full Frame", frame_history, self._colors[0])
+
+        # Track data range for validation
+        if frame_history:
+            self._data_min_frame = min(f[0] for f in frame_history)
+            self._data_max_frame = max(f[0] for f in frame_history)
+
+        # Update ROI series
+        color_idx = 1
+        for roi_id, label in roi_labels.items():
+            roi_history = roi_tracker.get_history(roi_id)
+            color = self._colors[color_idx % len(self._colors)]
+            self._update_series(roi_id, label, roi_history, color)
+            color_idx += 1
+
+        # Remove series for deleted ROIs
+        current_ids = {"full_frame"} | set(roi_labels.keys())
+        to_remove = [sid for sid in self._series if sid not in current_ids]
+        for sid in to_remove:
+            self._chart.removeSeries(self._series[sid])
+            del self._series[sid]
+
+        # Update X axis range
+        if self._auto_range_cb.isChecked():
+            self._update_auto_range()
+
+    def _update_series(
+        self,
+        series_id: str,
+        label: str,
+        history: list[tuple[int, float]],
+        color: QColor
+    ) -> None:
+        """Update or create a series."""
+        if series_id not in self._series:
+            series = QLineSeries()
+            series.setName(label)
+            series.setColor(color)
+            self._chart.addSeries(series)
+            series.attachAxis(self._axis_x)
+            series.attachAxis(self._axis_y)
+            self._series[series_id] = series
+        else:
+            series = self._series[series_id]
+            series.setName(label)  # Update label in case it changed
+
+        # Downsample if too many points
+        if len(history) > self.MAX_DISPLAY_POINTS:
+            # Keep every Nth point to stay under limit
+            step = len(history) // self.MAX_DISPLAY_POINTS + 1
+            display_data = history[::step]
+            # Always include the last point
+            if history[-1] not in display_data:
+                display_data = list(display_data) + [history[-1]]
+        else:
+            display_data = history
+
+        # Use batch replace for better performance
+        points = [QPointF(float(frame_idx), intensity) for frame_idx, intensity in display_data]
+        series.replace(points)
+
+    def clear(self) -> None:
+        """Clear all series."""
+        for series in self._series.values():
+            self._chart.removeSeries(series)
+        self._series.clear()
+
+
 class VideoTestWindow(QMainWindow):
     """Window to test video sources and ROI functionality."""
 
@@ -161,6 +444,7 @@ class VideoTestWindow(QMainWindow):
         self.setMinimumSize(1000, 700)
 
         self._source = None
+        self._last_chart_update = 0.0  # For throttling chart updates
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -183,16 +467,26 @@ class VideoTestWindow(QMainWindow):
         source_layout.addStretch()
         main_layout.addLayout(source_layout)
 
-        # Main content: canvas + ROI list
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        # Main content: canvas + ROI panel + chart (horizontal)
+        main_splitter = QSplitter(Qt.Orientation.Horizontal)
 
         # Image canvas
         self._canvas = ImageCanvas()
-        splitter.addWidget(self._canvas)
+        main_splitter.addWidget(self._canvas)
 
         # ROI panel
         roi_panel = QWidget()
         roi_layout = QVBoxLayout(roi_panel)
+
+        # Full-frame intensity display
+        frame_intensity_layout = QHBoxLayout()
+        frame_intensity_layout.addWidget(QLabel("Full Frame:"))
+        self._frame_intensity_label = QLabel("--")
+        self._frame_intensity_label.setStyleSheet("font-weight: bold; color: #00BFFF;")
+        frame_intensity_layout.addWidget(self._frame_intensity_label)
+        frame_intensity_layout.addStretch()
+        roi_layout.addLayout(frame_intensity_layout)
+
         roi_layout.addWidget(QLabel("ROIs:"))
 
         self._roi_list = QListWidget()
@@ -217,10 +511,37 @@ class VideoTestWindow(QMainWindow):
         self._clear_roi_btn.clicked.connect(self._on_clear_rois)
         roi_layout.addWidget(self._clear_roi_btn)
 
-        splitter.addWidget(roi_panel)
-        splitter.setSizes([800, 200])
+        # Export section
+        roi_layout.addSpacing(10)
+        export_group = QGroupBox("Log")
+        export_layout = QVBoxLayout(export_group)
 
-        main_layout.addWidget(splitter)
+        self._record_count_label = QLabel("Records: 0")
+        export_layout.addWidget(self._record_count_label)
+
+        export_btn_layout = QHBoxLayout()
+        self._export_btn = QPushButton("📄 Export")
+        self._export_btn.clicked.connect(self._on_export_log)
+        export_btn_layout.addWidget(self._export_btn)
+
+        self._clear_log_btn = QPushButton("🗑 Clear")
+        self._clear_log_btn.clicked.connect(self._on_clear_log)
+        export_btn_layout.addWidget(self._clear_log_btn)
+
+        export_layout.addLayout(export_btn_layout)
+
+        roi_layout.addWidget(export_group)
+
+        main_splitter.addWidget(roi_panel)
+
+        # Intensity chart (right side)
+        self._chart = IntensityChart()
+        self._chart.setMinimumWidth(300)
+        main_splitter.addWidget(self._chart)
+
+        main_splitter.setSizes([500, 150, 350])
+
+        main_layout.addWidget(main_splitter)
 
         # Controls
         ctrl_layout = QHBoxLayout()
@@ -374,6 +695,20 @@ class VideoTestWindow(QMainWindow):
             self._canvas.set_pixmap(pixmap)
             self._canvas.fit_in_view()
 
+            # Store frame and calculate full-frame intensity
+            self._canvas.set_frame(frame)
+            frame_intensity = calculate_frame_intensity(frame)
+            self._frame_intensity_label.setText(f"{frame_intensity:.3f}")
+
+            # Track full-frame intensity
+            self._canvas.track_frame_intensity(0, frame_intensity)
+            self._record_count_label.setText("Records: 1")
+
+            # Calculate ROI intensities if any ROIs exist
+            intensities = self._canvas.calculate_intensities(0)
+            self._update_roi_list(intensities)
+            self._update_chart(force=True)
+
             # Disable playback controls for single image
             self._play_pause_btn.setEnabled(False)
             self._seek_slider.setEnabled(False)
@@ -447,19 +782,136 @@ class VideoTestWindow(QMainWindow):
         self._canvas.clear_rois()
         self._roi_list.clear()
 
+    def _on_export_log(self) -> None:
+        """Export intensity data to CSV file."""
+        frame_history = self._canvas.frame_intensity_tracker.get_history("full_frame")
+        if not frame_history:
+            self._status.showMessage("No data to export")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Intensity Log", "intensity_log.csv",
+            "CSV Files (*.csv);;All Files (*)"
+        )
+
+        if not path:
+            return
+
+        try:
+            # Collect all ROI IDs
+            roi_ids = [roi.id for roi in self._canvas.roi_manager]
+            roi_labels = {roi.id: (roi.label or roi.id) for roi in self._canvas.roi_manager}
+
+            # Build data by frame index
+            frame_data: dict[int, dict[str, float]] = {}
+
+            # Add full-frame data
+            for frame_idx, intensity in frame_history:
+                if frame_idx not in frame_data:
+                    frame_data[frame_idx] = {}
+                frame_data[frame_idx]["full_frame"] = intensity
+
+            # Add ROI data
+            for roi_id in roi_ids:
+                roi_history = self._canvas.intensity_tracker.get_history(roi_id)
+                for frame_idx, intensity in roi_history:
+                    if frame_idx not in frame_data:
+                        frame_data[frame_idx] = {}
+                    frame_data[frame_idx][roi_id] = intensity
+
+            # Write CSV
+            with open(path, "w", encoding="utf-8") as f:
+                # Header
+                headers = ["frame", "full_frame"]
+                for roi_id in roi_ids:
+                    headers.append(roi_labels[roi_id])
+                f.write(",".join(headers) + "\n")
+
+                # Data rows (sorted by frame index)
+                for frame_idx in sorted(frame_data.keys()):
+                    row = [str(frame_idx)]
+                    row.append(f"{frame_data[frame_idx].get('full_frame', ''):.6f}"
+                               if 'full_frame' in frame_data[frame_idx] else "")
+                    for roi_id in roi_ids:
+                        if roi_id in frame_data[frame_idx]:
+                            row.append(f"{frame_data[frame_idx][roi_id]:.6f}")
+                        else:
+                            row.append("")
+                    f.write(",".join(row) + "\n")
+
+            self._status.showMessage(f"Exported {len(frame_data)} frames to {path}")
+        except Exception as e:
+            self._status.showMessage(f"Export failed: {e}")
+
+    def _on_clear_log(self) -> None:
+        """Clear all tracked intensity data."""
+        self._canvas.intensity_tracker.clear()
+        self._canvas.frame_intensity_tracker.clear()
+        self._chart.clear()
+        self._record_count_label.setText("Records: 0")
+        self._status.showMessage("Log cleared")
+
     def _on_roi_selected(self) -> None:
         """Handle ROI selection in list."""
         items = self._roi_list.selectedItems()
         # Could highlight selected ROI in canvas
 
-    def _update_roi_list(self) -> None:
-        """Update ROI list widget."""
-        self._roi_list.clear()
-        for roi in self._canvas.roi_manager:
-            item = QListWidgetItem(roi.label or roi.id)
-            item.setData(Qt.ItemDataRole.UserRole, roi.id)
-            item.setForeground(QColor(roi.color))
-            self._roi_list.addItem(item)
+    def _update_roi_list(self, intensities: dict[str, float] | None = None) -> None:
+        """Update ROI list widget with intensity values.
+
+        Uses incremental update when possible to avoid rebuilding the list.
+        """
+        roi_ids = [roi.id for roi in self._canvas.roi_manager]
+
+        # Check if we need to rebuild the list (ROIs added/removed)
+        current_ids = []
+        for i in range(self._roi_list.count()):
+            item = self._roi_list.item(i)
+            current_ids.append(item.data(Qt.ItemDataRole.UserRole))
+
+        if current_ids != roi_ids:
+            # ROIs changed - rebuild list
+            self._roi_list.clear()
+            for roi in self._canvas.roi_manager:
+                label = roi.label or roi.id
+                if intensities and roi.id in intensities:
+                    label = f"{label}: {intensities[roi.id]:.3f}"
+                item = QListWidgetItem(label)
+                item.setData(Qt.ItemDataRole.UserRole, roi.id)
+                item.setForeground(QColor(roi.color))
+                self._roi_list.addItem(item)
+        elif intensities:
+            # Just update intensity values in place
+            for i, roi in enumerate(self._canvas.roi_manager):
+                item = self._roi_list.item(i)
+                if item and roi.id in intensities:
+                    label = roi.label or roi.id
+                    item.setText(f"{label}: {intensities[roi.id]:.3f}")
+
+    def _update_chart(self, force: bool = False) -> None:
+        """Update intensity trend chart with throttling.
+
+        Args:
+            force: If True, update regardless of throttle.
+        """
+        import time
+
+        # Throttle updates to max 5 per second (200ms interval)
+        current_time = time.time()
+        if not force and (current_time - self._last_chart_update) < 0.2:
+            return
+
+        self._last_chart_update = current_time
+
+        roi_labels = {
+            roi.id: (roi.label or roi.id)
+            for roi in self._canvas.roi_manager
+        }
+        self._chart.update_data(
+            self._canvas.frame_intensity_tracker,
+            self._canvas.intensity_tracker,
+            roi_labels
+        )
 
     def _on_toggle_color(self) -> None:
         if self._source:
@@ -485,13 +937,30 @@ class VideoTestWindow(QMainWindow):
         pixmap = QPixmap.fromImage(qimg)
         self._canvas.set_pixmap(pixmap)
 
+        # Store frame and calculate intensities
+        self._canvas.set_frame(frame)
+        intensities = self._canvas.calculate_intensities(index)
+
+        # Calculate and display full-frame intensity
+        frame_intensity = calculate_frame_intensity(frame)
+        self._frame_intensity_label.setText(f"{frame_intensity:.3f}")
+
+        # Track full-frame intensity
+        self._canvas.track_frame_intensity(index, frame_intensity)
+
+        # Update record count
+        frame_count = self._canvas.frame_intensity_tracker.frame_count("full_frame")
+        self._record_count_label.setText(f"Records: {frame_count}")
+
         # Fit to screen on first frame
         if index == 0:
             self._canvas.fit_in_view()
 
-        # Update ROI list if new ROIs were added
-        if len(self._canvas.roi_manager) != self._roi_list.count():
-            self._update_roi_list()
+        # Update ROI list with intensity values
+        self._update_roi_list(intensities)
+
+        # Update intensity chart
+        self._update_chart()
 
         if not self._source.is_live:
             self._seek_slider.blockSignals(True)

@@ -53,10 +53,16 @@ class CameraWorker(QThread):
 
     def run(self) -> None:
         """Main capture loop."""
+        import time
+
         self._running = True
         frame_index = 0
+        target_fps = 30.0  # Limit to 30 FPS
+        frame_interval = 1.0 / target_fps
 
         while self._running:
+            frame_start = time.time()
+
             with QMutexLocker(self._mutex):
                 if not self._running:
                     break
@@ -69,6 +75,7 @@ class CameraWorker(QThread):
 
             if not ret or frame is None:
                 self._source.ERROR_OCCURRED.emit("Failed to read frame from camera")
+                time.sleep(0.1)  # Wait before retry
                 continue
 
             # Convert based on grayscale setting
@@ -83,6 +90,12 @@ class CameraWorker(QThread):
 
             # FPS control
             self._source._update_fps()
+
+            # Limit frame rate to prevent overwhelming the main thread
+            elapsed = time.time() - frame_start
+            sleep_time = frame_interval - elapsed
+            if sleep_time > 0:
+                time.sleep(sleep_time)
 
     def stop(self) -> None:
         """Stop the capture loop."""
