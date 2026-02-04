@@ -11,12 +11,18 @@ import argparse
 import sys
 from pathlib import Path
 
+# IMPORTANT: Set matplotlib backend BEFORE importing PyQt6
+# This prevents conflicts between matplotlib and Qt event loops
+import matplotlib
+matplotlib.use("QtAgg")
+
 import numpy as np
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFileDialog, QSlider, QStatusBar,
     QSpinBox, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
-    QListWidget, QListWidgetItem, QSplitter, QGroupBox, QCheckBox
+    QListWidget, QListWidgetItem, QSplitter, QGroupBox, QCheckBox,
+    QComboBox, QStackedWidget, QTabWidget
 )
 from PyQt6.QtGui import QImage, QPixmap, QColor, QPen, QBrush, QPainter
 from PyQt6.QtCore import Qt, QRectF, QMargins, QPointF
@@ -30,6 +36,7 @@ from pyrheed.roi import (
     ROI, ROIManager, ROIGraphicsItem,
     calculate_roi_intensity, calculate_frame_intensity, IntensityTracker
 )
+from pyrheed.visualization import IntensityHeatmap, IntensityContour, IntensitySurface
 
 
 class ImageCanvas(QGraphicsView):
@@ -534,10 +541,27 @@ class VideoTestWindow(QMainWindow):
 
         main_splitter.addWidget(roi_panel)
 
-        # Intensity chart (right side)
+        # Visualization panel (right side) - tabbed views
+        self._vis_tabs = QTabWidget()
+        self._vis_tabs.setMinimumWidth(350)
+
+        # Tab 1: Intensity trend chart
         self._chart = IntensityChart()
-        self._chart.setMinimumWidth(300)
-        main_splitter.addWidget(self._chart)
+        self._vis_tabs.addTab(self._chart, "Trend")
+
+        # Tab 2: Heatmap
+        self._heatmap = IntensityHeatmap()
+        self._vis_tabs.addTab(self._heatmap, "Heatmap")
+
+        # Tab 3: Contour
+        self._contour = IntensityContour()
+        self._vis_tabs.addTab(self._contour, "Contour")
+
+        # Tab 4: 3D Surface
+        self._surface = IntensitySurface()
+        self._vis_tabs.addTab(self._surface, "3D Surface")
+
+        main_splitter.addWidget(self._vis_tabs)
 
         main_splitter.setSizes([500, 150, 350])
 
@@ -708,6 +732,11 @@ class VideoTestWindow(QMainWindow):
             intensities = self._canvas.calculate_intensities(0)
             self._update_roi_list(intensities)
             self._update_chart(force=True)
+
+            # Update all visualizations for single image
+            self._heatmap.update_frame(frame)
+            self._contour.update_frame(frame)
+            self._surface.update_frame(frame)
 
             # Disable playback controls for single image
             self._play_pause_btn.setEnabled(False)
@@ -917,6 +946,32 @@ class VideoTestWindow(QMainWindow):
             roi_labels
         )
 
+    def _update_visualization(self, frame: np.ndarray) -> None:
+        """Update the visualization views with throttling.
+
+        Only updates the currently visible tab for performance.
+        """
+        import time
+
+        # Throttle to max 2 updates per second for visualizations
+        current_time = time.time()
+        if not hasattr(self, "_last_vis_update"):
+            self._last_vis_update = 0.0
+
+        if (current_time - self._last_vis_update) < 0.5:
+            return
+
+        self._last_vis_update = current_time
+
+        # Only update the currently visible tab
+        current_index = self._vis_tabs.currentIndex()
+        if current_index == 1:  # Heatmap
+            self._heatmap.update_frame(frame)
+        elif current_index == 2:  # Contour
+            self._contour.update_frame(frame)
+        elif current_index == 3:  # 3D Surface
+            self._surface.update_frame(frame)
+
     def _on_toggle_color(self) -> None:
         if self._source:
             self._source.grayscale = not self._color_btn.isChecked()
@@ -965,6 +1020,9 @@ class VideoTestWindow(QMainWindow):
 
         # Update intensity chart
         self._update_chart()
+
+        # Update visualization (only current tab for performance)
+        self._update_visualization(frame)
 
         if not self._source.is_live:
             self._seek_slider.blockSignals(True)
