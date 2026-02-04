@@ -12,3 +12,8 @@ Dockerfile
 PyRHEED.zip
 .dockerignore
 .pypirc
+# Test data (large files)
+tests/data/videos/*
+tests/data/images/*
+!tests/data/videos/.gitkeep
+!tests/data/images/.gitkeep

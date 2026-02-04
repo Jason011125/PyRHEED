@@ -127,28 +127,33 @@ class ImageSequenceSource(FrameSource):
             frame_index: Frame index to retrieve.
 
         Returns:
-            Grayscale uint8 numpy array, or None if unavailable.
+            Frame as uint8 numpy array (grayscale or RGB), or None if unavailable.
         """
         if not 0 <= frame_index < self._total_frames:
             return None
 
-        # Check cache first
-        if frame_index in self._frame_cache:
-            return self._frame_cache[frame_index]
+        # Cache key includes grayscale mode
+        cache_key = (frame_index, self._grayscale)
+        if cache_key in self._frame_cache:
+            return self._frame_cache[cache_key]
 
         # Load from disk
         try:
             image_path = self._image_paths[frame_index]
             img = Image.open(image_path)
 
-            # Convert to grayscale
-            if img.mode != "L":
-                img = img.convert("L")
+            # Convert based on grayscale setting
+            if self._grayscale:
+                if img.mode != "L":
+                    img = img.convert("L")
+            else:
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
 
             frame = np.array(img, dtype=np.uint8)
 
             # Update cache
-            self._update_cache(frame_index, frame)
+            self._update_cache(cache_key, frame)
 
             return frame
 
@@ -196,14 +201,14 @@ class ImageSequenceSource(FrameSource):
         if self._current_frame_index >= self._total_frames:
             self._current_frame_index = 0  # Loop back
 
-    def _update_cache(self, frame_index: int, frame: NDArray[np.uint8]) -> None:
+    def _update_cache(self, cache_key: tuple, frame: NDArray[np.uint8]) -> None:
         """Update frame cache with LRU eviction."""
-        self._frame_cache[frame_index] = frame
+        self._frame_cache[cache_key] = frame
 
         # Evict oldest if cache is full
         if len(self._frame_cache) > self._cache_size:
             # Remove the key furthest from current position
             keys = list(self._frame_cache.keys())
-            distances = [abs(k - self._current_frame_index) for k in keys]
+            distances = [abs(k[0] - self._current_frame_index) for k in keys]
             furthest_idx = distances.index(max(distances))
             del self._frame_cache[keys[furthest_idx]]

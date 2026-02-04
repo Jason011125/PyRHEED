@@ -147,3 +147,19 @@ class TestFrameSource:
         """is_live should default to False."""
         source = MockFrameSource()
         assert source.is_live is False
+
+    def test_grayscale_default(self) -> None:
+        """grayscale should default to True for RHEED."""
+        source = MockFrameSource()
+        assert source.grayscale is True
+
+    def test_grayscale_setter(self) -> None:
+        """grayscale can be toggled."""
+        source = MockFrameSource()
+        assert source.grayscale is True
+
+        source.grayscale = False
+        assert source.grayscale is False
+
+        source.grayscale = True
+        assert source.grayscale is True

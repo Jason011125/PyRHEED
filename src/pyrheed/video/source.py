@@ -55,6 +55,17 @@ class FrameSource(QObject, metaclass=QObjectABCMeta):
         self._current_frame_index = 0
         self._total_frames = 0
         self._fps = 30.0
+        self._grayscale = True  # Default to grayscale for RHEED
+
+    @property
+    def grayscale(self) -> bool:
+        """Whether to convert frames to grayscale."""
+        return self._grayscale
+
+    @grayscale.setter
+    def grayscale(self, value: bool) -> None:
+        """Set grayscale mode."""
+        self._grayscale = value
 
     @property
     def state(self) -> SourceState:

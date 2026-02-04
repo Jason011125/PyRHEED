@@ -71,11 +71,14 @@ class CameraWorker(QThread):
                 self._source.ERROR_OCCURRED.emit("Failed to read frame from camera")
                 continue
 
-            # Convert to grayscale
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            # Convert based on grayscale setting
+            if self._source.grayscale:
+                converted = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            else:
+                converted = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
             # Emit frame
-            self._source.FRAME_READY.emit(gray, frame_index)
+            self._source.FRAME_READY.emit(converted, frame_index)
             frame_index += 1
 
             # FPS control
@@ -200,7 +203,7 @@ class CameraSource(FrameSource):
         """Get current frame (frame_index is ignored for live source).
 
         Returns:
-            Current camera frame as grayscale uint8 array.
+            Current camera frame as uint8 array (grayscale or RGB).
         """
         if self._cap is None or not self._cap.isOpened():
             return None
@@ -210,7 +213,10 @@ class CameraSource(FrameSource):
         if not ret or frame is None:
             return None
 
-        return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if self._grayscale:
+            return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        else:
+            return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
     def get_camera_info(self) -> dict:
         """Get camera properties.

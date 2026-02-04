@@ -170,10 +170,11 @@ class VideoFileSource(FrameSource):
         if not ret or frame is None:
             return None
 
-        # Convert BGR to grayscale
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-        return gray
+        # Convert based on grayscale setting
+        if self._grayscale:
+            return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        else:
+            return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
     def get_video_info(self) -> dict:
         """Get video metadata.
@@ -219,10 +220,13 @@ class VideoFileSource(FrameSource):
             self._current_frame_index = 0
             return
 
-        # Convert to grayscale
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        # Convert based on grayscale setting
+        if self._grayscale:
+            converted = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        else:
+            converted = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        self.FRAME_READY.emit(gray, self._current_frame_index)
+        self.FRAME_READY.emit(converted, self._current_frame_index)
         self._current_frame_index += 1
 
     def _get_codec(self) -> str:
