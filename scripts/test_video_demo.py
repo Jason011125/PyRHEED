@@ -38,6 +38,9 @@ from pyrheed.roi import (
 )
 from pyrheed.visualization import IntensityHeatmap, IntensityContour, IntensitySurface
 
+# Import Stripe theme
+from stripe_theme import apply_stripe_theme, Colors, CHART_COLORS
+
 
 class ImageCanvas(QGraphicsView):
     """Graphics view for displaying frames and ROIs."""
@@ -212,45 +215,25 @@ class IntensityChart(QWidget):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        # Frame range controls
-        range_layout = QHBoxLayout()
-        range_layout.addWidget(QLabel("Frame:"))
-
-        self._start_spin = QSpinBox()
-        self._start_spin.setMinimum(0)
-        self._start_spin.setMaximum(999999)
-        self._start_spin.setValue(0)
-        self._start_spin.valueChanged.connect(self._on_spin_changed)
-        range_layout.addWidget(self._start_spin)
-
-        range_layout.addWidget(QLabel("-"))
-
-        self._end_spin = QSpinBox()
-        self._end_spin.setMinimum(0)
-        self._end_spin.setMaximum(999999)
-        self._end_spin.setValue(100)
-        self._end_spin.valueChanged.connect(self._on_spin_changed)
-        range_layout.addWidget(self._end_spin)
-
-        self._auto_range_cb = QCheckBox("Auto")
-        self._auto_range_cb.setChecked(True)
-        self._auto_range_cb.stateChanged.connect(self._on_auto_range_changed)
-        range_layout.addWidget(self._auto_range_cb)
-
-        range_layout.addStretch()
-        layout.addLayout(range_layout)
-
-        # Error label
-        self._error_label = QLabel("")
-        self._error_label.setStyleSheet("color: red; font-size: 11px;")
-        self._error_label.setVisible(False)
-        layout.addWidget(self._error_label)
+        # 标题作为独立 Widget（像 Web 一样，与其他可视化标签页统一）
+        self._title_label = QLabel("Intensity Trend")
+        self._title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._title_label.setStyleSheet("""
+            QLabel {
+                color: #B4B3AF;
+                font-size: 16px;
+                padding: 8px 0;
+                background-color: transparent;
+            }
+        """)
+        layout.addWidget(self._title_label)
 
         # Chart view
         self._chart_view = QChartView()
         self._chart = QChart()
-        self._chart.setTitle("Intensity Trend")
+        self._chart.setTitle("")  # 标题已经用 QLabel 了，这里清空
         self._chart.legend().setVisible(True)
         self._chart.setAnimationOptions(QChart.AnimationOption.NoAnimation)
         self._chart.setMargins(QMargins(0, 0, 0, 0))
@@ -268,20 +251,62 @@ class IntensityChart(QWidget):
 
         self._chart_view.setChart(self._chart)
         self._chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # 设置图表颜色主题（暗色主题优化，避免纯白刺眼）
+        self._setup_chart_theme()
+
         layout.addWidget(self._chart_view)
+
+        # Frame range controls 移到底部（紧凑样式）
+        range_layout = QHBoxLayout()
+        range_layout.setSpacing(6)  # 紧凑间距
+
+        frame_label = QLabel("Frame:")
+        frame_label.setStyleSheet("font-size: 12px;")  # 缩小字体
+        range_layout.addWidget(frame_label)
+
+        self._start_spin = QSpinBox()
+        self._start_spin.setMinimum(0)
+        self._start_spin.setMaximum(999999)
+        self._start_spin.setValue(0)
+        self._start_spin.setMaximumWidth(80)  # 限制宽度
+        self._start_spin.setStyleSheet("font-size: 12px;")  # 缩小字体
+        self._start_spin.valueChanged.connect(self._on_spin_changed)
+        range_layout.addWidget(self._start_spin)
+
+        dash_label = QLabel("-")
+        dash_label.setStyleSheet("font-size: 12px;")
+        range_layout.addWidget(dash_label)
+
+        self._end_spin = QSpinBox()
+        self._end_spin.setMinimum(0)
+        self._end_spin.setMaximum(999999)
+        self._end_spin.setValue(100)
+        self._end_spin.setMaximumWidth(80)  # 限制宽度
+        self._end_spin.setStyleSheet("font-size: 12px;")  # 缩小字体
+        self._end_spin.valueChanged.connect(self._on_spin_changed)
+        range_layout.addWidget(self._end_spin)
+
+        self._auto_range_cb = QCheckBox("Auto")
+        self._auto_range_cb.setChecked(True)
+        self._auto_range_cb.setStyleSheet("font-size: 12px;")  # 缩小字体
+        self._auto_range_cb.stateChanged.connect(self._on_auto_range_changed)
+        range_layout.addWidget(self._auto_range_cb)
+
+        range_layout.addStretch()
+        layout.addLayout(range_layout)
+
+        # Error label 移到最底部
+        self._error_label = QLabel("")
+        self._error_label.setStyleSheet("color: red; font-size: 11px;")
+        self._error_label.setVisible(False)
+        layout.addWidget(self._error_label)
 
         # Series storage
         self._series: dict[str, QLineSeries] = {}
 
-        # Colors for series
-        self._colors = [
-            QColor("#00BFFF"),  # Full frame - cyan
-            QColor("#FF6B6B"),  # ROI 1 - red
-            QColor("#4ECDC4"),  # ROI 2 - teal
-            QColor("#FFE66D"),  # ROI 3 - yellow
-            QColor("#95E1D3"),  # ROI 4 - mint
-            QColor("#F38181"),  # ROI 5 - coral
-        ]
+        # Colors for series (using Stripe color palette)
+        self._colors = [QColor(c) for c in CHART_COLORS]
 
         # Store current data for re-filtering
         self._current_frame_tracker: IntensityTracker | None = None
@@ -291,6 +316,47 @@ class IntensityChart(QWidget):
         # Valid data range
         self._data_min_frame = 0
         self._data_max_frame = 0
+
+    def _setup_chart_theme(self) -> None:
+        """设置图表颜色主题（暗色优化，柔和不刺眼）"""
+        # 图表整体背景色（深色）
+        chart_bg = QBrush(QColor(Colors.SURFACE))
+        self._chart.setBackgroundBrush(chart_bg)
+
+        # 绘图区域背景色（深色，不是白色！）
+        plot_bg = QBrush(QColor("#252729"))  # 比 SURFACE 稍深一点
+        self._chart.setPlotAreaBackgroundBrush(plot_bg)
+        self._chart.setPlotAreaBackgroundVisible(True)
+
+        # 图表标题颜色（柔和灰白）
+        title_brush = QBrush(QColor("#B4B3AF"))
+        self._chart.setTitleBrush(title_brush)
+
+        # 图例文字颜色（柔和灰白）
+        legend = self._chart.legend()
+        legend.setLabelColor(QColor("#9B9A97"))
+
+        # 坐标轴标签颜色（柔和灰白）
+        label_color = QColor("#9B9A97")
+        self._axis_x.setLabelsColor(label_color)
+        self._axis_y.setLabelsColor(label_color)
+
+        # 坐标轴标题颜色（柔和灰白）
+        title_brush = QBrush(QColor("#B4B3AF"))
+        self._axis_x.setTitleBrush(title_brush)
+        self._axis_y.setTitleBrush(title_brush)
+
+        # 网格线颜色（深灰，不刺眼）
+        grid_pen = QPen(QColor("#3F4447"))
+        grid_pen.setWidth(1)
+        self._axis_x.setGridLinePen(grid_pen)
+        self._axis_y.setGridLinePen(grid_pen)
+
+        # 坐标轴线颜色（深灰）
+        axis_pen = QPen(QColor("#4F5458"))
+        axis_pen.setWidth(1)
+        self._axis_x.setLinePen(axis_pen)
+        self._axis_y.setLinePen(axis_pen)
 
     def _on_spin_changed(self) -> None:
         """Handle spinbox value change - auto switch to manual mode."""
@@ -447,8 +513,16 @@ class VideoTestWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("PyRHEED Video + ROI Test")
+        self.setWindowTitle("PyRHEED")
         self.setMinimumSize(1000, 700)
+
+        # macOS: 统一标题栏和工具栏（Notion 风格）
+        try:
+            from PyQt6.QtCore import Qt
+            # 设置为统一样式（标题栏背景与窗口内容融合）
+            self.setAttribute(Qt.WidgetAttribute.WA_MacUnifiedTitleBar, True)
+        except Exception:
+            pass  # 非 macOS 系统忽略
 
         self._source = None
         self._last_chart_update = 0.0  # For throttling chart updates
@@ -462,11 +536,11 @@ class VideoTestWindow(QMainWindow):
         # Source selection
         source_layout = QHBoxLayout()
 
-        self._open_btn = QPushButton("📁 Open File/Folder...")
+        self._open_btn = QPushButton("Open File...")
         self._open_btn.clicked.connect(self._on_open_file)
         source_layout.addWidget(self._open_btn)
 
-        self._camera_btn = QPushButton("📷 Camera")
+        self._camera_btn = QPushButton("Camera")
         self._camera_btn.setCheckable(True)
         self._camera_btn.clicked.connect(self._on_toggle_camera)
         source_layout.addWidget(self._camera_btn)
@@ -489,7 +563,7 @@ class VideoTestWindow(QMainWindow):
         frame_intensity_layout = QHBoxLayout()
         frame_intensity_layout.addWidget(QLabel("Full Frame:"))
         self._frame_intensity_label = QLabel("--")
-        self._frame_intensity_label.setStyleSheet("font-weight: bold; color: #00BFFF;")
+        self._frame_intensity_label.setStyleSheet(f"font-weight: bold; color: {Colors.CHART_1};")
         frame_intensity_layout.addWidget(self._frame_intensity_label)
         frame_intensity_layout.addStretch()
         roi_layout.addLayout(frame_intensity_layout)
@@ -503,12 +577,12 @@ class VideoTestWindow(QMainWindow):
         # ROI buttons
         roi_btn_layout = QHBoxLayout()
 
-        self._add_roi_btn = QPushButton("+ Add ROI")
+        self._add_roi_btn = QPushButton("Add ROI")
         self._add_roi_btn.setCheckable(True)
         self._add_roi_btn.clicked.connect(self._on_toggle_add_roi)
         roi_btn_layout.addWidget(self._add_roi_btn)
 
-        self._del_roi_btn = QPushButton("- Delete")
+        self._del_roi_btn = QPushButton("Delete")
         self._del_roi_btn.clicked.connect(self._on_delete_roi)
         roi_btn_layout.addWidget(self._del_roi_btn)
 
@@ -527,11 +601,11 @@ class VideoTestWindow(QMainWindow):
         export_layout.addWidget(self._record_count_label)
 
         export_btn_layout = QHBoxLayout()
-        self._export_btn = QPushButton("📄 Export")
+        self._export_btn = QPushButton("Export")
         self._export_btn.clicked.connect(self._on_export_log)
         export_btn_layout.addWidget(self._export_btn)
 
-        self._clear_log_btn = QPushButton("🗑 Clear")
+        self._clear_log_btn = QPushButton("Clear")
         self._clear_log_btn.clicked.connect(self._on_clear_log)
         export_btn_layout.addWidget(self._clear_log_btn)
 
@@ -563,21 +637,21 @@ class VideoTestWindow(QMainWindow):
 
         main_splitter.addWidget(self._vis_tabs)
 
-        main_splitter.setSizes([500, 150, 350])
+        main_splitter.setSizes([800, 150, 350])  # 增大画布区域
 
         main_layout.addWidget(main_splitter)
 
         # Controls
         ctrl_layout = QHBoxLayout()
 
-        self._play_pause_btn = QPushButton("▶ Play")
+        self._play_pause_btn = QPushButton("Play")
         self._play_pause_btn.clicked.connect(self._on_play_pause)
         self._play_pause_btn.setEnabled(False)
         ctrl_layout.addWidget(self._play_pause_btn)
 
         ctrl_layout.addWidget(QLabel("  |  "))
 
-        self._color_btn = QPushButton("🎨 Color")
+        self._color_btn = QPushButton("Color Mode")
         self._color_btn.setCheckable(True)
         self._color_btn.setChecked(False)
         self._color_btn.clicked.connect(self._on_toggle_color)
@@ -585,16 +659,14 @@ class VideoTestWindow(QMainWindow):
 
         ctrl_layout.addWidget(QLabel("  |  "))
 
-        self._zoom_in_btn = QPushButton("🔍+")
+        self._zoom_in_btn = QPushButton("Zoom In")
         self._zoom_in_btn.clicked.connect(self._on_zoom_in)
         self._zoom_in_btn.setToolTip("Zoom In")
-        self._zoom_in_btn.setFixedWidth(40)
         ctrl_layout.addWidget(self._zoom_in_btn)
 
-        self._zoom_out_btn = QPushButton("🔍-")
+        self._zoom_out_btn = QPushButton("Zoom Out")
         self._zoom_out_btn.clicked.connect(self._on_zoom_out)
         self._zoom_out_btn.setToolTip("Zoom Out")
-        self._zoom_out_btn.setFixedWidth(40)
         ctrl_layout.addWidget(self._zoom_out_btn)
 
         self._fit_btn = QPushButton("Fit")
@@ -614,7 +686,7 @@ class VideoTestWindow(QMainWindow):
         # Frame navigation
         nav_layout = QHBoxLayout()
 
-        self._prev_btn = QPushButton("◀ Prev")
+        self._prev_btn = QPushButton("Previous")
         self._prev_btn.clicked.connect(self._on_prev_frame)
         self._prev_btn.setEnabled(False)
         nav_layout.addWidget(self._prev_btn)
@@ -631,7 +703,7 @@ class VideoTestWindow(QMainWindow):
         self._total_label = QLabel("/ 0")
         nav_layout.addWidget(self._total_label)
 
-        self._next_btn = QPushButton("Next ▶")
+        self._next_btn = QPushButton("Next")
         self._next_btn.clicked.connect(self._on_next_frame)
         self._next_btn.setEnabled(False)
         nav_layout.addWidget(self._next_btn)
@@ -1040,9 +1112,9 @@ class VideoTestWindow(QMainWindow):
 
     def _on_state_changed(self, state: SourceState) -> None:
         if state == SourceState.PLAYING:
-            self._play_pause_btn.setText("⏸ Pause")
+            self._play_pause_btn.setText("Pause")
         else:
-            self._play_pause_btn.setText("▶ Play")
+            self._play_pause_btn.setText("Play")
 
     def _on_error(self, message: str) -> None:
         self._status.showMessage(f"Error: {message}")
@@ -1105,6 +1177,10 @@ def main():
     args = parser.parse_args()
 
     app = QApplication(sys.argv)
+
+    # Apply Stripe theme
+    apply_stripe_theme(app)
+
     window = VideoTestWindow()
 
     if args.path:
